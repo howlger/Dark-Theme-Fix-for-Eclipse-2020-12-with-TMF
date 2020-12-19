@@ -1,0 +1,184 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>patch</groupId>
+    <artifactId>patches-repo</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <properties>
+
+        <!-- Tycho version (<https://wiki.eclipse.org/Tycho/Release_Notes>) specified in:
+             - .mvn/extensions.xml
+             - and here:
+         -->
+        <tycho-version>2.1.0</tycho-version>
+
+    </properties>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.eclipse.tycho.extras</groupId>
+                <artifactId>tycho-p2-extras-plugin</artifactId>
+                <version>${tycho-version}</version>
+                <executions>
+
+                    <!-- step 1: get features containing plugins to patch -->
+                    <execution>
+                        <id>get-plugins</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>mirror</goal>
+                        </goals>
+                        <configuration>
+                            <source>
+                                <repository>
+                                    <url>https://download.eclipse.org/releases/2020-12</url>
+                                </repository>
+                            </source>
+                            <destination>${project.build.directory}/repository_original</destination>
+                            <ius>
+                                <iu><id>org.eclipse.tracecompass.tmf.feature.group</id></iu>
+                            </ius>
+                            <followStrictOnly>true</followStrictOnly>
+                            <latestVersionOnly>true</latestVersionOnly>
+                            <includePacked>false</includePacked>
+                            <includeFeatures>true</includeFeatures>
+                            <includeOptional>false</includeOptional>
+                            <includeNonGreedy>false</includeNonGreedy>
+                        </configuration>
+                    </execution>
+
+                    <!-- step 3: re-generate p2 metadata with new calculated checksums -->
+                    <execution>
+                        <id>generate-full-metadata</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>publish-features-and-bundles</goal>
+                        </goals>
+                        <configuration>
+                            <sourceLocation>${project.build.directory}/repository_patched</sourceLocation>
+                            <metadataRepositoryLocation>${project.build.directory}/repository_patched</metadataRepositoryLocation>
+                            <artifactRepositoryLocation>${project.build.directory}/repository_patched</artifactRepositoryLocation>
+                        </configuration>
+                    </execution>
+
+                 </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.0.0</version>
+                <executions>
+
+                    <!-- step 2: replace the plugins with the patched ones and update target definition -->
+                    <execution>
+                        <id>patch-plugins</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+
+                                <!-- patch a plugin -->
+                                <macrodef name="patch-plugin">
+                                    <attribute name="plugin"/>
+                                    <attribute name="version"/>
+                                    <attribute name="feature-jar"/>
+                                    <sequential>
+                                        <fail message="Plugin to patch does not exist in mirrored repository: @{plugin}_@{version}.jar">
+                                            <condition>
+                                                <not><resourceexists>
+                                                    <file file="${project.build.directory}/repository_original/plugins/@{plugin}_@{version}.jar"/>
+                                                </resourceexists></not>
+                                            </condition>
+                                        </fail>
+                                        <unzip src="${project.build.directory}/repository_original/plugins/@{plugin}_@{version}.jar"
+                                            dest="${project.build.directory}/temp_@{plugin}"/>
+                                        <delete file="${project.build.directory}/temp_@{plugin}/META-INF/ECLIPSE_.RSA"/>
+                                        <delete file="${project.build.directory}/temp_@{plugin}/META-INF/ECLIPSE_.SF"/>
+                                        <replaceregexp file="${project.build.directory}/temp_@{plugin}/META-INF/MANIFEST.MF"
+                                            byline="no" flags="g"
+                                            match="([\r\n]++Name:[^\r\n]++[\r\n]++( [^\r\n]++[\r\n]++)*SHA-256-Digest:[^\r\n]++(?=[\r\n]))++"
+                                            replace=""/>
+                                        <replaceregexp file="${project.build.directory}/temp_@{plugin}/META-INF/MANIFEST.MF"
+                                            match="Bundle-Version:\s*+@{version}"
+                                            replace="\0_patched"/>
+                                        <copy overwrite="yes" todir="${project.build.directory}/temp_@{plugin}">
+                                            <fileset dir="${project.basedir}/@{plugin}"/>
+                                        </copy>
+                                        <delete file="${project.build.directory}/repository_patched/plugins/@{plugin}_@{version}.jar"/>
+                                        <zip basedir="${project.build.directory}/temp_@{plugin}"
+                                            destfile="${project.build.directory}/repository_patched/plugins/@{plugin}_@{version}_patched.jar"
+                                            level="9"/>
+                                        <fail message="Feature JAR does not exist in mirrored repository: @{feature-jar}.jar">
+                                            <condition>
+                                                <not><resourceexists>
+                                                    <file file="${project.build.directory}/repository_original/features/@{feature-jar}.jar"/>
+                                                </resourceexists></not>
+                                            </condition>
+                                        </fail>
+                                        <unzip src="${project.build.directory}/repository_original/features/@{feature-jar}.jar"
+                                            dest="${project.build.directory}/temp__@{feature-jar}"/>
+                                        <delete file="${project.build.directory}/temp__@{feature-jar}/META-INF/ECLIPSE_.RSA"/>
+                                        <delete file="${project.build.directory}/temp__@{feature-jar}/META-INF/ECLIPSE_.SF"/>
+                                        <replaceregexp file="${project.build.directory}/temp__@{feature-jar}/META-INF/MANIFEST.MF"
+                                            byline="no" flags="g"
+                                            match="([\r\n]++Name:[^\r\n]++[\r\n]++( [^\r\n]++[\r\n]++)*SHA-256-Digest:[^\r\n]++(?=[\r\n]))++"
+                                            replace=""/>
+                                        <replaceregexp file="${project.build.directory}/temp__@{feature-jar}/feature.xml"
+                                            byline="no"
+                                            match="(&lt;feature\s++((?!version)[\w_\-]++\s*+=\s*+&quot;[^&quot;]++&quot;\s++)*+version\s*+=\s*+&quot;[^&quot;]++)(&quot;)"
+                                            replace="\1_patched&quot;"/>
+                                        <replaceregexp file="${project.build.directory}/temp__@{feature-jar}/feature.xml"
+                                            byline="no"
+                                            match="(&lt;plugin\s++((?!version)(?!id)[\w_\-]++\s*+=\s*+&quot;[^&quot;]++&quot;\s++)*+id\s*+=\s*+&quot;@{plugin}&quot;\s++((?!version)[\w_\-]++\s*+=\s*+&quot;[^&quot;]++&quot;\s++)*+version\s*+=\s*+&quot;@{version})(&quot;)"
+                                            replace="\1_patched&quot;"/>
+                                        <delete file="${project.build.directory}/repository_patched/features/@{feature-jar}.jar"/>
+                                        <zip basedir="${project.build.directory}/temp__@{feature-jar}"
+                                            destfile="${project.build.directory}/repository_patched/features/@{feature-jar}_patched.jar"
+                                            level="9"/>
+                                      </sequential>
+                                </macrodef>
+                                <mkdir dir="${project.build.directory}/repository_patched"/>
+                                <copy todir="${project.build.directory}/repository_patched">
+                                    <fileset dir="${project.build.directory}/repository_original" excludes="artifacts.*, content.*"/>
+                                </copy>
+                                <patch-plugin plugin="org.eclipse.tracecompass.tmf.ui"
+                                              version="6.2.0.202012091849"
+                                              feature-jar="org.eclipse.tracecompass.tmf_6.2.0.202012091849"/>
+                            </target>
+                        </configuration>
+                    </execution>
+
+                    <!-- step 4: add category and patched feature groups -->
+                    <execution>
+                        <id>post-process-repo</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <unzip src="${project.build.directory}/repository_patched/content.jar"
+                                    dest="${project.build.directory}/content.jar"/>
+                                <replaceregexp file="${project.build.directory}/content.jar/content.xml"
+                                    byline="no"
+                                    match="&lt;repository\s++name='[^']*+'"
+                                    replace="&lt;repository name='Dark Theme Fix for Eclipse 2020-12 (4.18) with TMF'"/>
+                                <loadfile property="content.snippet" srcFile="${project.basedir}/content_snippet.txt"/>
+                                <replace file="${project.build.directory}/content.jar/content.xml" token="&lt;units size='22'>" value="${content.snippet}"/>
+                                <delete file="${project.build.directory}/repository_patched/content.jar"/>
+                                <zip basedir="${project.build.directory}/content.jar"
+                                    destfile="${project.build.directory}/repository_patched/content.jar"
+                                    level="9"/>
+                            </target>
+                        </configuration>
+                    </execution>
+
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
